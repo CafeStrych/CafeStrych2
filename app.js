@@ -1,4 +1,6 @@
 
+const APP_VERSION = "3.3.0";
+
 const sb = supabase.createClient(
     "https://dhqsjwanjrcblrhevfcq.supabase.co",
     "sb_publishable_55XUZSnWLqML_VKscgI1Ow_AAWJiCTa",
@@ -25,7 +27,6 @@ const sb = supabase.createClient(
     announcements: [],
     swaps: [],
     reservationPlaces: [],
-    rooms: [], tables: [], menuItems: [], orders: [], orderItems: [], payments: [], expenses: [], cashSessions: [],
     bookingMode:
       localStorage.getItem("cafeBookingMode") ||
       (matchMedia("(max-width:700px)").matches ? "week" : "month"),
@@ -70,7 +71,18 @@ function M(t, h, fn, show = true) {
   $("#save").classList.toggle("hide", !show);
   $("#form").onsubmit = async (e) => {
     e.preventDefault();
-    await fn();
+    const save = $("#save");
+    if (save.dataset.busy === "1") return;
+    save.dataset.busy = "1";
+    save.disabled = true;
+    save.textContent = "Zapisywanie…";
+    try {
+      await fn();
+    } finally {
+      save.dataset.busy = "0";
+      save.disabled = false;
+      save.textContent = "Zapisz";
+    }
   };
   $("#dlg").showModal();
 }
@@ -93,7 +105,12 @@ async function load() {
   core.forEach((x) => x.error && console.warn(x.error.message));
   [S.profiles, S.employees, S.shifts, S.bookings, S.products, S.leave, S.bugs] =
     core.map((x) => x.data || []);
-  S.logs = [];
+  const lr = await sb
+    .from("activity_logs")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(300);
+  S.logs = lr.error ? [] : lr.data || [];
   const optional = await Promise.all([
     sb.from("availability").select("*").order("work_date"),
     sb
@@ -158,12 +175,7 @@ $("#login").onsubmit = async (e) => {
 };
 $("#signup").onsubmit = async (e) => {
   e.preventDefault();
-  let { error } = await sb.auth.signUp({
-    email: $("#se").value,
-    password: $("#sp").value,
-    options: { data: { full_name: $("#sn").value } },
-  });
-  $("#msg").textContent = error?.message || "Konto utworzone.";
+  $("#msg").textContent = "Rejestracja publiczna jest wyłączona. Konto może utworzyć administrator.";
 };
 $("#menuBtn").onclick = (e) => {
   e.stopPropagation();
@@ -606,7 +618,19 @@ window.deleteEmployee = async (id) => {
   renderEmployees();
   toast("Pracownik usunięty");
 };
-async function addLog(action, module, details = {}) { return {action,module,details}; }
+async function addLog(action, module, details = {}) {
+  try {
+    await sb.from("activity_logs").insert({
+      user_id: S.u?.id || null,
+      user_email: S.u?.email || null,
+      action,
+      module,
+      details,
+    });
+  } catch (e) {
+    console.warn("Log unavailable", e);
+  }
+}
 window.renderLogs = () => {
   let modules = [...new Set(S.logs.map((x) => x.module).filter(Boolean))];
   M(
@@ -892,7 +916,11 @@ sb.channel("cafe-strych-live")
     { event: "*", schema: "public", table: "profiles" },
     liveReload,
   )
-
+  .on(
+    "postgres_changes",
+    { event: "*", schema: "public", table: "activity_logs" },
+    liveReload,
+  )
   .on(
     "postgres_changes",
     { event: "*", schema: "public", table: "availability" },
@@ -915,7 +943,7 @@ sb.auth.getSession().then(({ data }) => boot(data.session));
 
 
 /* Cafe Strych 2.4.0: accounts, profiles, contracts, online status, admin navigation */
-const APP_VERSION="3.0.2 STABLE";
+/* version is defined once at the top of the file */
 function splitName(v){const p=String(v||"").trim().split(/\s+/);return {first:p[0]||"Pracownik",last:p.slice(1).join(" ")}}
 function employeeLabel(id){const e=S.employees.find(x=>x.id===id);if(!e)return "Pracownik";const n=splitName(e.full_name);const same=S.employees.filter(x=>splitName(x.full_name).first.toLocaleLowerCase("pl")===n.first.toLocaleLowerCase("pl"));return same.length>1&&n.last?`${n.first} ${n.last[0].toUpperCase()}.`:n.first}
 async function markOnline(){if(!S.u)return;await sb.from("profiles").update({last_seen_at:new Date().toISOString(),email:S.u.email}).eq("id",S.u.id)}
@@ -936,33 +964,169 @@ setTimeout(()=>{const a=document.querySelector('#account');if(a)a.onclick=()=>{c
 
 /* ===== CAFE STRYCH PRO 3.0: dashboard, POS, QR, rooms, finance ===== */
 function money(v){return Number(v||0).toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2})+' zł'}
-function orderItems(id){return (S.orderItems || []).filter(x=>x.order_id===id)}
+function orderItems(id){return S.orderItems.filter(x=>x.order_id===id)}
 function orderTotal(o){return orderItems(o.id).reduce((n,x)=>n+Number(x.qty)*Number(x.unit_price),0)}
 function todayISO(){return ISO(new Date())}
 function renderDashboard(){
- const today=todayISO(), todayOrders=(S.orders || []).filter(o=>(o.created_at||'').slice(0,10)===today), paid=todayOrders.filter(o=>o.status==='paid');
- const revenue=paid.reduce((n,o)=>n+orderTotal(o),0), active=(S.orders || []).filter(o=>!['paid','cancelled'].includes(o.status));
+ const today=todayISO(), todayOrders=S.orders.filter(o=>(o.created_at||'').slice(0,10)===today), paid=todayOrders.filter(o=>o.status==='paid');
+ const revenue=paid.reduce((n,o)=>n+orderTotal(o),0), active=S.orders.filter(o=>!['paid','cancelled'].includes(o.status));
  const bookings=S.bookings.filter(b=>(b.start_at||'').slice(0,10)===today);
  $('#content').innerHTML=`<div class="toolbar"><div><h2>Centrum dowodzenia</h2><small>Dzisiaj • ${new Date().toLocaleDateString('pl-PL')}</small></div><button class="primary" onclick="newOrder()">+ Nowy rachunek</button></div>
  <div class="kpiGrid"><button class="kpi" onclick="renderPOS()"><span>Sprzedaż dzisiaj</span><strong>${money(revenue)}</strong><small>${paid.length} zamkniętych rachunków</small></button><button class="kpi" onclick="renderPOS()"><span>Aktywne zamówienia</span><strong>${active.length}</strong><small>kuchnia i bar</small></button><button class="kpi" onclick="view('bookings')"><span>Rezerwacje dzisiaj</span><strong>${bookings.length}</strong><small>${bookings.reduce((n,b)=>n+Number(b.guests_count||0),0)} gości</small></button><button class="kpi" onclick="renderEmployees()"><span>Pracownicy</span><strong>${S.employees.length}</strong><small>aktywnych kont</small></button></div>
  <div class="dashboardGrid"><section class="glass adminSection"><div class="sectionHead"><h3>Aktualne rachunki</h3><button class="ghost" onclick="renderPOS()">Otwórz POS</button></div>${active.slice(0,8).map(orderCard).join('')||'<p class="muted">Brak aktywnych rachunków.</p>'}</section><section class="glass adminSection"><h3>Dzisiejsze rezerwacje</h3>${bookings.map(bookingCard).join('')||'<p class="muted">Brak rezerwacji.</p>'}</section></div>`;
 }
-function orderCard(o){const t=(S.tables || []).find(x=>x.id===o.table_id);return `<button class="orderCard status-${o.status}" onclick="openOrder('${o.id}')"><div><b>${E(o.order_no||'Rachunek')}</b><small>${E(t?.label||o.customer_name||'Sprzedaż bez stolika')} • ${E(o.status)}</small></div><strong>${money(orderTotal(o))}</strong></button>`}
+function orderCard(o){const t=S.tables.find(x=>x.id===o.table_id);return `<button class="orderCard status-${o.status}" onclick="openOrder('${o.id}')"><div><b>${E(o.order_no||'Rachunek')}</b><small>${E(t?.label||o.customer_name||'Sprzedaż bez stolika')} • ${E(o.status)}</small></div><strong>${money(orderTotal(o))}</strong></button>`}
 function renderPOS(){
- const active=(S.orders || []).filter(o=>!['paid','cancelled'].includes(o.status));
+ const active=S.orders.filter(o=>!['paid','cancelled'].includes(o.status));
  $('#content').innerHTML=`<div class="toolbar"><div><h2>POS i zamówienia</h2><small>Rachunki, bar, kuchnia i płatności</small></div><div class="actions"><button class="ghost" onclick="renderMenuAdmin()">Menu</button><button class="ghost" onclick="renderRoomsAdmin()">Sale i stoliki</button><button class="primary" onclick="newOrder()">+ Rachunek</button></div></div><div class="posStatus"><button onclick="filterOrders('all')">Wszystkie</button><button onclick="filterOrders('new')">Nowe</button><button onclick="filterOrders('preparing')">W przygotowaniu</button><button onclick="filterOrders('ready')">Gotowe</button></div><div id="ordersGrid" class="ordersGrid">${active.map(orderCard).join('')||'<p class="muted">Brak otwartych rachunków.</p>'}</div>`;
 }
-window.filterOrders=st=>{const a=(S.orders || []).filter(o=>!['paid','cancelled'].includes(o.status)&&(st==='all'||o.status===st));$('#ordersGrid').innerHTML=a.map(orderCard).join('')||'<p class="muted">Brak zamówień.</p>'}
-window.newOrder=()=>{M('Nowy rachunek',`<label>Stolik</label><select id="ot"><option value="">Bez stolika / na wynos</option>${(S.tables || []).filter(t=>t.active!==false).map(t=>`<option value="${t.id}">${E(t.label)}</option>`).join('')}</select>${F('oc','Nazwa klienta / opis','','placeholder="opcjonalnie"')}`,async()=>{const no='CS-'+new Date().toISOString().replace(/\D/g,'').slice(2,14),{data,error}=await sb.from('pos_orders').insert({order_no:no,table_id:$('#ot').value||null,customer_name:$('#oc').value.trim()||null,status:'new',source:'pos',created_by:S.u.id}).select().single();if(error)return alert(error.message);$('#dlg').close();await load();openOrder(data.id)})}
-window.openOrder=id=>{const o=S.orders.find(x=>x.id===id);if(!o)return;const items=orderItems(id),cats=[...new Set((S.menuItems || []).filter(x=>x.active!==false).map(x=>x.category||'Inne'))];$('#content').innerHTML=`<div class="toolbar"><div><button class="ghost" onclick="renderPOS()">← POS</button><h2>${E(o.order_no)}</h2><small>${E(o.status)} • ${new Date(o.created_at).toLocaleString('pl-PL')}</small></div><strong class="grandTotal">${money(orderTotal(o))}</strong></div><div class="posLayout"><section><div class="categoryTabs">${cats.map(c=>`<button onclick="showMenuCategory('${E(c)}')">${E(c)}</button>`).join('')}</div><div id="menuTiles" class="menuTiles">${menuTiles(cats[0],id)}</div></section><aside class="ticket"><h3>Rachunek</h3>${items.map(i=>`<div class="ticketRow"><div><b>${E(i.item_name)}</b><small>${i.qty} × ${money(i.unit_price)}</small></div><div><b>${money(i.qty*i.unit_price)}</b><button class="danger mini" onclick="removeOrderItem('${i.id}','${id}')">×</button></div></div>`).join('')||'<p class="muted">Dodaj pozycje z menu.</p>'}<div class="ticketTotal"><span>Razem</span><strong>${money(orderTotal(o))}</strong></div><div class="orderActions"><button class="ghost" onclick="setOrderStatus('${id}','preparing')">Przygotowanie</button><button class="ghost" onclick="setOrderStatus('${id}','ready')">Gotowe</button><button class="primary" onclick="payOrder('${id}')">Płatność</button></div></aside></div>`;window.__openOrder=id}
-function menuTiles(cat,id){return (S.menuItems || []).filter(x=>x.active!==false&&(!cat||(x.category||'Inne')===cat)).map(x=>`<button class="menuTile" onclick="addOrderItem('${id}','${x.id}')"><span>${E(x.name)}</span><strong>${money(x.price)}</strong><small>${E(x.category||'Inne')}</small></button>`).join('')||'<p class="muted">Brak produktów w kategorii.</p>'}
+window.filterOrders=st=>{const a=S.orders.filter(o=>!['paid','cancelled'].includes(o.status)&&(st==='all'||o.status===st));$('#ordersGrid').innerHTML=a.map(orderCard).join('')||'<p class="muted">Brak zamówień.</p>'}
+window.newOrder=()=>{M('Nowy rachunek',`<label>Stolik</label><select id="ot"><option value="">Bez stolika / na wynos</option>${S.tables.filter(t=>t.active!==false).map(t=>`<option value="${t.id}">${E(t.label)}</option>`).join('')}</select>${F('oc','Nazwa klienta / opis','','placeholder="opcjonalnie"')}`,async()=>{const no='CS-'+new Date().toISOString().replace(/\D/g,'').slice(2,14),{data,error}=await sb.from('pos_orders').insert({order_no:no,table_id:$('#ot').value||null,customer_name:$('#oc').value.trim()||null,status:'new',source:'pos',created_by:S.u.id}).select().single();if(error)return alert(error.message);$('#dlg').close();await load();openOrder(data.id)})}
+window.openOrder=id=>{const o=S.orders.find(x=>x.id===id);if(!o)return;const items=orderItems(id),cats=[...new Set(S.menuItems.filter(x=>x.active!==false).map(x=>x.category||'Inne'))];$('#content').innerHTML=`<div class="toolbar"><div><button class="ghost" onclick="renderPOS()">← POS</button><h2>${E(o.order_no)}</h2><small>${E(o.status)} • ${new Date(o.created_at).toLocaleString('pl-PL')}</small></div><strong class="grandTotal">${money(orderTotal(o))}</strong></div><div class="posLayout"><section><div class="categoryTabs">${cats.map(c=>`<button onclick="showMenuCategory('${E(c)}')">${E(c)}</button>`).join('')}</div><div id="menuTiles" class="menuTiles">${menuTiles(cats[0],id)}</div></section><aside class="ticket"><h3>Rachunek</h3>${items.map(i=>`<div class="ticketRow"><div><b>${E(i.item_name)}</b><small>${i.qty} × ${money(i.unit_price)}</small></div><div><b>${money(i.qty*i.unit_price)}</b><button class="danger mini" onclick="removeOrderItem('${i.id}','${id}')">×</button></div></div>`).join('')||'<p class="muted">Dodaj pozycje z menu.</p>'}<div class="ticketTotal"><span>Razem</span><strong>${money(orderTotal(o))}</strong></div><div class="orderActions"><button class="ghost" onclick="setOrderStatus('${id}','preparing')">Przygotowanie</button><button class="ghost" onclick="setOrderStatus('${id}','ready')">Gotowe</button><button class="primary" onclick="payOrder('${id}')">Płatność</button></div></aside></div>`;window.__openOrder=id}
+function menuTiles(cat,id){return S.menuItems.filter(x=>x.active!==false&&(!cat||(x.category||'Inne')===cat)).map(x=>`<button class="menuTile" onclick="addOrderItem('${id}','${x.id}')"><span>${E(x.name)}</span><strong>${money(x.price)}</strong><small>${E(x.category||'Inne')}</small></button>`).join('')||'<p class="muted">Brak produktów w kategorii.</p>'}
 window.showMenuCategory=cat=>{$('#menuTiles').innerHTML=menuTiles(cat,window.__openOrder)}
-window.addOrderItem=async(oid,mid)=>{const m=(S.menuItems || []).find(x=>x.id===mid),old=orderItems(oid).find(x=>x.menu_item_id===mid);const q=old?sb.from('pos_order_items').update({qty:Number(old.qty)+1}).eq('id',old.id):sb.from('pos_order_items').insert({order_id:oid,menu_item_id:mid,item_name:m.name,qty:1,unit_price:m.price,tax_rate:m.tax_rate||23});const{error}=await q;if(error)return alert(error.message);await load();openOrder(oid)}
+window.addOrderItem=async(oid,mid)=>{const m=S.menuItems.find(x=>x.id===mid),old=orderItems(oid).find(x=>x.menu_item_id===mid);const q=old?sb.from('pos_order_items').update({qty:Number(old.qty)+1}).eq('id',old.id):sb.from('pos_order_items').insert({order_id:oid,menu_item_id:mid,item_name:m.name,qty:1,unit_price:m.price,tax_rate:m.tax_rate||23});const{error}=await q;if(error)return alert(error.message);await load();openOrder(oid)}
 window.removeOrderItem=async(id,oid)=>{await sb.from('pos_order_items').delete().eq('id',id);await load();openOrder(oid)}
 window.setOrderStatus=async(id,status)=>{const{error}=await sb.from('pos_orders').update({status,updated_at:new Date().toISOString()}).eq('id',id);if(error)return alert(error.message);await load();openOrder(id)}
 window.payOrder=id=>{const total=orderTotal(S.orders.find(x=>x.id===id));M('Finalizacja płatności',`<div class="payTotal">${money(total)}</div><label>Metoda</label><select id="pm"><option value="card">Karta</option><option value="cash">Gotówka</option><option value="blik">BLIK</option><option value="transfer">Przelew</option></select>${F('pt','Napiwek','number','min="0" step="0.01" value="0"')}`,async()=>{const{error}=await sb.from('pos_payments').insert({order_id:id,amount:total,tip_amount:+$('#pt').value||0,method:$('#pm').value,created_by:S.u.id});if(error)return alert(error.message);await sb.from('pos_orders').update({status:'paid',closed_at:new Date().toISOString()}).eq('id',id);$('#dlg').close();await load();renderPOS();toast('Rachunek opłacony')})}
-window.renderMenuAdmin=()=>{$('#content').innerHTML=`<div class="toolbar"><div><button class="ghost" onclick="renderPOS()">← POS</button><h2>Menu sprzedażowe</h2></div><button class="primary" onclick="menuForm()">+ Produkt</button></div><div class="menuAdminGrid">${(S.menuItems || []).map(x=>`<div class="card"><div class="grow"><b>${E(x.name)}</b><small>${E(x.category||'Inne')} • ${money(x.price)} • VAT ${x.tax_rate||23}%</small></div><button class="ghost" onclick="menuForm('${x.id}')">Edytuj</button></div>`).join('')}</div>`}
-window.menuForm=(id=null)=>{const r=(S.menuItems || []).find(x=>x.id===id);M(r?'Edytuj produkt':'Nowy produkt',`${F('mn','Nazwa','','required')}${F('mc','Kategoria','','required')}${F('mp','Cena','number','min="0" step="0.01" required')}${F('mv','VAT %','number','min="0" value="23"')}<label class="checkRow"><input id="ma" type="checkbox" checked> Aktywny w sprzedaży i QR</label>`,async()=>{const p={name:$('#mn').value.trim(),category:$('#mc').value.trim(),price:+$('#mp').value,tax_rate:+$('#mv').value,active:$('#ma').checked,updated_at:new Date().toISOString()},q=r?sb.from('menu_items').update(p).eq('id',id):sb.from('menu_items').insert({...p,created_by:S.u.id}),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderMenuAdmin()});setTimeout(()=>{if(r){$('#mn').value=r.name;$('#mc').value=r.category;$('#mp').value=r.price;$('#mv').value=r.tax_rate||23;$('#ma').checked=r.active!==false}},0)}
-window.renderRoomsAdmin=()=>{$('#content').innerHTML=`<div class="toolbar"><div><button class="ghost" onclick="renderPOS()">← POS</button><h2>Sale i stoliki</h2></div><div class="actions"><button class="ghost" onclick="roomForm()">+ Sala</button><button class="primary" onclick="tableForm()">+ Stolik</button></div></div>${(S.rooms || []).map(r=>`<section class="roomBlock"><div class="sectionHead"><div><h3>${E(r.name)}</h3><small>do ${r.capacity||'—'} osób</small></div><button class="ghost" onclick="roomForm('${r.id}')">Edytuj</button></div><div class="tableGrid">${(S.tables || []).filter(t=>t.room_id===r.id).map(t=>`<button class="tableAdmin" onclick="tableForm('${t.id}')"><b>${E(t.label)}</b><small>${t.seats||0} miejsc</small><span>${t.qr_token?'QR aktywny':'Brak QR'}</span></button>`).join('')||'<p class="muted">Brak stolików.</p>'}</div></section>`).join('')}`}
-window.roomForm=(id=null)=>{const r=(S.rooms || []).find(x=>x.id===id);M(r?'Edytuj salę':'Nowa sala',`${F('rn','Nazwa','','required')}${F('rc','Pojemność','number','min="1"')}`,async()=>{const p={name:$('#rn').value.trim(),capacity:+$('#rc').value||null},q=r?sb.from('cafe_rooms').update(p).eq('id',id):sb.from('cafe_rooms').insert(p),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderRoomsAdmin()});setTimeout(()=>{if(r){$('#rn').value=r.name;$('#rc').value=r.capacity||''}},0)}
-window.tableForm=(id=null)=>{const r=(S.tables || []).find(x=>x.id===id);M(r?'Edytuj stolik':'Nowy stolik',`<label>Sala</label><select id="tr">${(S.rooms || []).map(x=>`<option value="${x.id}">${E(x.name)}</option>`).join('')}</select>${F('tl','Nazwa / numer','','required')}${F('ts','Liczba miejsc','number','min="1" value="4"')}<label class="checkRow"><input id="ta" type="checkbox" checked> Aktywny</label>`,async()=>{const p={room_id:$('#tr').value,label:$('#tl').value.trim(),seats:+$('#ts').value||4,active:$('#ta').checked,qr_token:r?.qr_token||crypto.randomUUID()},q=r?sb.from('cafe_tables').update(p).eq('id',id):sb.from('cafe_tables').insert(p),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderRoomsAdmin()});setTimeout(()=>{if(r){$('#tr').value=r.room_id;$('#tl').value=r.label;$('#ts').value=r.seats;$('#ta').checked=r.active!==false}},0)}
+window.renderMenuAdmin=()=>{$('#content').innerHTML=`<div class="toolbar"><div><button class="ghost" onclick="renderPOS()">← POS</button><h2>Menu sprzedażowe</h2></div><button class="primary" onclick="menuForm()">+ Produkt</button></div><div class="menuAdminGrid">${S.menuItems.map(x=>`<div class="card"><div class="grow"><b>${E(x.name)}</b><small>${E(x.category||'Inne')} • ${money(x.price)} • VAT ${x.tax_rate||23}%</small></div><button class="ghost" onclick="menuForm('${x.id}')">Edytuj</button></div>`).join('')}</div>`}
+window.menuForm=(id=null)=>{const r=S.menuItems.find(x=>x.id===id);M(r?'Edytuj produkt':'Nowy produkt',`${F('mn','Nazwa','','required')}${F('mc','Kategoria','','required')}${F('mp','Cena','number','min="0" step="0.01" required')}${F('mv','VAT %','number','min="0" value="23"')}<label class="checkRow"><input id="ma" type="checkbox" checked> Aktywny w sprzedaży i QR</label>`,async()=>{const p={name:$('#mn').value.trim(),category:$('#mc').value.trim(),price:+$('#mp').value,tax_rate:+$('#mv').value,active:$('#ma').checked,updated_at:new Date().toISOString()},q=r?sb.from('menu_items').update(p).eq('id',id):sb.from('menu_items').insert({...p,created_by:S.u.id}),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderMenuAdmin()});setTimeout(()=>{if(r){$('#mn').value=r.name;$('#mc').value=r.category;$('#mp').value=r.price;$('#mv').value=r.tax_rate||23;$('#ma').checked=r.active!==false}},0)}
+window.renderRoomsAdmin=()=>{$('#content').innerHTML=`<div class="toolbar"><div><button class="ghost" onclick="renderPOS()">← POS</button><h2>Sale i stoliki</h2></div><div class="actions"><button class="ghost" onclick="roomForm()">+ Sala</button><button class="primary" onclick="tableForm()">+ Stolik</button></div></div>${S.rooms.map(r=>`<section class="roomBlock"><div class="sectionHead"><div><h3>${E(r.name)}</h3><small>do ${r.capacity||'—'} osób</small></div><button class="ghost" onclick="roomForm('${r.id}')">Edytuj</button></div><div class="tableGrid">${S.tables.filter(t=>t.room_id===r.id).map(t=>`<button class="tableAdmin" onclick="tableForm('${t.id}')"><b>${E(t.label)}</b><small>${t.seats||0} miejsc</small><span>${t.qr_token?'QR aktywny':'Brak QR'}</span></button>`).join('')||'<p class="muted">Brak stolików.</p>'}</div></section>`).join('')}`}
+window.roomForm=(id=null)=>{const r=S.rooms.find(x=>x.id===id);M(r?'Edytuj salę':'Nowa sala',`${F('rn','Nazwa','','required')}${F('rc','Pojemność','number','min="1"')}`,async()=>{const p={name:$('#rn').value.trim(),capacity:+$('#rc').value||null},q=r?sb.from('cafe_rooms').update(p).eq('id',id):sb.from('cafe_rooms').insert(p),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderRoomsAdmin()});setTimeout(()=>{if(r){$('#rn').value=r.name;$('#rc').value=r.capacity||''}},0)}
+window.tableForm=(id=null)=>{const r=S.tables.find(x=>x.id===id);M(r?'Edytuj stolik':'Nowy stolik',`<label>Sala</label><select id="tr">${S.rooms.map(x=>`<option value="${x.id}">${E(x.name)}</option>`).join('')}</select>${F('tl','Nazwa / numer','','required')}${F('ts','Liczba miejsc','number','min="1" value="4"')}<label class="checkRow"><input id="ta" type="checkbox" checked> Aktywny</label>`,async()=>{const p={room_id:$('#tr').value,label:$('#tl').value.trim(),seats:+$('#ts').value||4,active:$('#ta').checked,qr_token:r?.qr_token||crypto.randomUUID()},q=r?sb.from('cafe_tables').update(p).eq('id',id):sb.from('cafe_tables').insert(p),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderRoomsAdmin()});setTimeout(()=>{if(r){$('#tr').value=r.room_id;$('#tl').value=r.label;$('#ts').value=r.seats;$('#ta').checked=r.active!==false}},0)}
+
+/* ===== CAFE STRYCH 3.2.0 OPERATIONS PRO ===== */
+const PRO_VERSION = APP_VERSION;
+S.appSettings={qr_enabled:false}; S.permissions=[]; S.inventory=[];
+const baseLoad=load;
+load=async function(){
+ await baseLoad();
+ const extra=await Promise.all([
+  sb.from('cafe_settings').select('*').limit(1).maybeSingle(),
+  sb.from('employee_permissions').select('*'),
+  sb.from('inventory_items').select('*').order('name')
+ ]);
+ S.appSettings=extra[0].error?{qr_enabled:false}:(extra[0].data||{qr_enabled:false});
+ S.permissions=extra[1].error?[]:(extra[1].data||[]);
+ S.inventory=extra[2].error?[]:(extra[2].data||[]);
+};
+function perm(key){if(S.p?.role==='admin'||S.p?.role==='manager')return true;const e=currentEmployee();const r=S.permissions.find(x=>x.employee_id===e?.id);return !!r?.[key]}
+function applyRoleUI(){
+ const admin= S.p?.role==='admin', mgr=S.p?.role==='manager';
+ document.querySelector('[data-v="pos"]')?.classList.toggle('hide',!(admin||mgr||perm('can_pos')));
+ document.querySelector('[data-v="bookings"]')?.classList.toggle('hide',!(admin||mgr||perm('can_bookings')));
+ $('#quick')?.classList.toggle('hide',!(admin||mgr||perm('can_shopping')));
+}
+const baseBoot=boot;boot=async function(s){await baseBoot(s);if(S.u){applyRoleUI();view('dashboard')}};
+function employeeHome(){
+ const e=currentEmployee(), mine=e?(S.shifts||[]).filter(x=>x.employee_id===e.id):[], upcoming=mine.filter(x=>x.shift_date>=ISO(new Date())).sort((a,b)=>a.shift_date.localeCompare(b.shift_date));
+ $('#content').innerHTML=`<div class="welcomeHero"><div><small>Panel pracownika</small><h2>Cześć, ${E(S.p?.full_name||'')}</h2><p>Twój grafik, komunikaty i najważniejsze działania w jednym miejscu.</p></div><div class="roleBadge">PRACOWNIK</div></div><div class="employeeDash"><section class="dashPanel"><h3>📅 Najbliższa zmiana</h3>${upcoming[0]?`<strong>${upcoming[0].shift_date}</strong><p>${upcoming[0].start_time.slice(0,5)}–${upcoming[0].end_time.slice(0,5)}</p>`:'<p class="muted">Brak zaplanowanej zmiany.</p>'}</section><section class="dashPanel"><h3>📢 Komunikaty</h3>${(S.announcements||[]).slice(0,3).map(a=>`<p>${E(a.message||a.content||'')}</p>`).join('')||'<p class="muted">Brak nowych komunikatów.</p>'}</section><section class="dashPanel"><h3>⏱ Moje godziny</h3><strong>${sumHours(mine.filter(x=>x.shift_date>=monthRange()[0]&&x.shift_date<=monthRange()[1])).toFixed(2)} h</strong></section><section class="dashPanel actionsPanel"><h3>Moje działania</h3><button onclick="renderMyPanel()">Dyspozycyjność i wnioski</button><button onclick="view('schedule')">Otwórz grafik</button></section></div>`;
+}
+const managerHome=renderDashboard;
+renderDashboard=function(){if(!manage())return employeeHome();managerHome();const h=$('#content .toolbar h2');if(h)h.textContent=S.p?.role==='admin'?'🏠 Centrum administratora':'🏠 Pulpit kierownika'};
+function renderInventory(){
+ $('#content').innerHTML=`<div class="toolbar"><div><h2>📦 Magazyn</h2><small>Stany magazynowe i lista zakupów</small></div>${manage()?'<button class="primary" onclick="inventoryForm()">+ Produkt magazynowy</button>':''}</div><div class="inventoryTabs"><button class="active">Magazyn</button><button onclick="RP()">🛒 Lista zakupów</button></div><div class="inventoryGrid">${(S.inventory||[]).map(x=>`<div class="inventoryCard ${Number(x.quantity)<=Number(x.min_quantity)?'lowStock':''}"><div><b>${E(x.name)}</b><small>${E(x.category||'Inne')}</small></div><strong>${x.quantity} ${E(x.unit||'szt.')}</strong><small>Minimum: ${x.min_quantity||0}</small>${manage()?`<button onclick="inventoryForm('${x.id}')">Edytuj</button>`:''}</div>`).join('')||'<p class="muted">Brak produktów magazynowych.</p>'}</div>`;
+}
+window.inventoryForm=(id=null)=>{const r=S.inventory.find(x=>x.id===id);M(r?'Edytuj produkt magazynowy':'Produkt magazynowy',`${F('in','Nazwa','','required')}${F('ic','Kategoria','','required')}${F('iq','Stan','number','step="0.01" required')}${F('iu','Jednostka','','value="szt."')}${F('im','Stan minimalny','number','step="0.01" value="0"')}`,async()=>{const p={name:$('#in').value.trim(),category:$('#ic').value.trim(),quantity:+$('#iq').value,unit:$('#iu').value.trim(),min_quantity:+$('#im').value},q=r?sb.from('inventory_items').update(p).eq('id',id):sb.from('inventory_items').insert(p),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderInventory()});setTimeout(()=>{if(r){$('#in').value=r.name;$('#ic').value=r.category;$('#iq').value=r.quantity;$('#iu').value=r.unit;$('#im').value=r.min_quantity}},0)};
+function wholeRoomForm(){
+ M('Wynajem całej sali',`${F('wrn','Imię i nazwisko','','required')}${F('wrt','Telefon','tel','required')}${F('wrd','Data i godzina','datetime-local','required')}<label>Sala</label><select id="wrr">${(S.rooms||[]).map(r=>`<option value="${r.id}">${E(r.name)}</option>`).join('')}</select>${F('wrg','Liczba gości','number','min="1" required')}${F('wra','Kwota zadatku','number','min="0" step="0.01" value="0"')}<label>Uwagi</label><textarea id="wrnote"></textarea>`,async()=>{const room=(S.rooms||[]).find(x=>x.id===$('#wrr').value),a=new Date($('#wrd').value),z=new Date(a.getTime()+4*3600000);const{error}=await sb.from('bookings').insert({title:$('#wrn').value,customer_phone:$('#wrt').value,guests_count:+$('#wrg').value,room:room?.name,place_name:room?.name,start_at:a.toISOString(),end_at:z.toISOString(),deposit_amount:+$('#wra').value||0,whole_room:true,booking_status:'confirmed',notes:$('#wrnote').value,created_by:S.u.id});if(error)return alert(error.message);$('#dlg').close();await load();RB();toast('Wynajem sali zapisany')})
+}
+window.wholeRoomForm=wholeRoomForm;
+const oldRB=RB;RB=function(){oldRB();if(manage()){const a=$('#content .toolbar .actions');if(a)a.insertAdjacentHTML('afterbegin','<button class="ghost" onclick="wholeRoomForm()">🏛 Wynajmij całą salę</button>')}};
+window.toggleQR=async()=>{const enabled=!S.appSettings.qr_enabled;const p={id:1,qr_enabled:enabled,updated_at:new Date().toISOString()}, {error}=await sb.from('cafe_settings').upsert(p);if(error)return alert(error.message);S.appSettings=p;renderSettings();toast(enabled?'Zamawianie QR włączone':'Zamawianie QR wyłączone')};
+window.permissionEditor=id=>{const e=S.employees.find(x=>x.id===id),r=S.permissions.find(x=>x.employee_id===id)||{};M(`Dostęp: ${E(e?.full_name)}`,['can_pos','can_bookings','can_schedule','can_inventory','can_shopping'].map((k,i)=>`<label class="permissionRow"><input type="checkbox" id="p${i}" ${r[k]?'checked':''}> ${['Obsługa POS','Rezerwacje','Grafik','Magazyn','Lista zakupów'][i]}</label>`).join(''),async()=>{const p={employee_id:id,can_pos:$('#p0').checked,can_bookings:$('#p1').checked,can_schedule:$('#p2').checked,can_inventory:$('#p3').checked,can_shopping:$('#p4').checked},{error}=await sb.from('employee_permissions').upsert(p,{onConflict:'employee_id'});if(error)return alert(error.message);$('#dlg').close();await load();renderEmployees();toast('Dostępy zapisane')})};
+const employeeBase=renderEmployees;renderEmployees=function(){employeeBase();if(manage())document.querySelectorAll('#content .card').forEach((c,i)=>{const e=S.employees[i];if(e)c.querySelector('.actions')?.insertAdjacentHTML('afterbegin',`<button class="ghost" onclick="event.stopPropagation();permissionEditor('${e.id}')">Dostępy</button>`)})};
+function targetedAnnouncement(){const options=S.employees.map((e,i)=>`<label class="permissionRow"><input class="recipientPick" type="checkbox" value="${e.id}"> ${E(e.full_name)}</label>`).join('');M('Nowy komunikat',`<label>Treść</label><textarea id="tam" required></textarea><div class="recipientHead"><b>Odbiorcy</b><button type="button" class="ghost" onclick="document.querySelectorAll('.recipientPick').forEach(x=>x.checked=true)">Zaznacz wszystkich</button></div><div class="recipientList">${options}</div>`,async()=>{const ids=[...document.querySelectorAll('.recipientPick:checked')].map(x=>x.value);if(!ids.length)return alert('Wybierz co najmniej jednego pracownika.');const{error}=await sb.from('announcements').insert({message:$('#tam').value.trim(),created_by:S.u.id,target_employee_ids:ids});if(error)return alert(error.message);$('#dlg').close();await load();toast('Komunikat wysłany')})}
+window.targetedAnnouncement=targetedAnnouncement;
+const settingsBase=renderSettings;renderSettings=function(){if(S.p.role!=='admin')return settingsBase();$('#content').innerHTML=`<div class="toolbar"><div><h2>⚙️ Ustawienia administratora</h2><small>Konfiguracja funkcji, dostępu i lokalu</small></div><span class="versionPill">${PRO_VERSION}</span></div><div class="settingsGrid"><section class="settingsCard"><h3>📱 Zamawianie QR</h3><p>Funkcja jest obecnie <b>${S.appSettings.qr_enabled?'WŁĄCZONA':'WYŁĄCZONA'}</b>.</p><button class="${S.appSettings.qr_enabled?'danger':'primary'}" onclick="toggleQR()">${S.appSettings.qr_enabled?'Wyłącz zamawianie QR':'Włącz zamawianie QR'}</button></section><section class="settingsCard"><h3>👥 Konta i dostępy</h3><p>Ustawiaj indywidualne uprawnienia pracowników.</p><button onclick="renderEmployees()">Zarządzaj pracownikami</button></section><section class="settingsCard"><h3>🏛 Sale i stoliki</h3><p>Administrator i kierownik mogą zmieniać nazwy sal.</p><button onclick="renderRoomsAdmin()">Edytuj sale</button></section><section class="settingsCard"><h3>📢 Komunikaty</h3><p>Wyślij komunikat do jednej lub kilku osób.</p><button onclick="targetedAnnouncement()">Nowy komunikat</button></section><section class="settingsCard"><h3>📦 Magazyn</h3><p>Stany, minima i osobna lista zakupów.</p><button onclick="renderInventory()">Otwórz magazyn</button></section><section class="settingsCard"><h3>🧾 POS</h3><p>Menu, rachunki, płatności i stoliki.</p><button onclick="renderPOS()">Otwórz POS</button></section></div>`};
+window.renderInventory=renderInventory;
+setTimeout(()=>{const p=document.querySelector('[data-v="pos"]');if(p)p.innerHTML='🧾<small>POS</small>';const d=document.querySelector('[data-v="dashboard"]');if(d)d.innerHTML='🏠<small>Start</small>';const pr=document.querySelector('[data-v="products"]');if(pr){pr.dataset.v='inventory';pr.innerHTML='📦<small>Magazyn</small>';pr.onclick=()=>{document.querySelectorAll('[data-v]').forEach(x=>x.classList.toggle('active',x===pr));renderInventory()}};const footer=$('#appVersion');if(footer)footer.textContent='Wersja '+PRO_VERSION},0);
+
+
+/* ===== CAFE STRYCH 3.3.0 HARDENING ===== */
+// Employees should only receive announcements addressed to them.
+const announcementsLoadBase = load;
+load = async function () {
+  await announcementsLoadBase();
+  if (!S.u) return;
+  if (manage()) return;
+  const employee = currentEmployee();
+  if (!employee) {
+    S.announcements = [];
+    return;
+  }
+  S.announcements = (S.announcements || []).filter((a) => {
+    const ids = Array.isArray(a.target_employee_ids) ? a.target_employee_ids : [];
+    return ids.length === 0 || ids.includes(employee.id);
+  });
+};
+
+// Re-check visibility in the employee dashboard even if cached state is stale.
+const employeeHomeBase = employeeHome;
+employeeHome = function () {
+  const employee = currentEmployee();
+  if (employee && !manage()) {
+    S.announcements = (S.announcements || []).filter((a) => {
+      const ids = Array.isArray(a.target_employee_ids) ? a.target_employee_ids : [];
+      return ids.length === 0 || ids.includes(employee.id);
+    });
+  }
+  return employeeHomeBase();
+};
+
+// Do not show an announcement to a user who is not an intended recipient.
+const showLatestAnnouncementBase = showLatestAnnouncement;
+showLatestAnnouncement = function () {
+  if (!manage()) {
+    const employee = currentEmployee();
+    if (!employee) return;
+    S.announcements = (S.announcements || []).filter((a) => {
+      const ids = Array.isArray(a.target_employee_ids) ? a.target_employee_ids : [];
+      return ids.length === 0 || ids.includes(employee.id);
+    });
+  }
+  return showLatestAnnouncementBase();
+};
+
+// Atomic payment finalization through the Supabase RPC added in the migration.
+window.payOrder = async (id) => {
+  const order = S.orders.find((x) => x.id === id);
+  if (!order) return toast("Nie znaleziono rachunku.");
+  if (order.status === "paid" || order.status === "cancelled") {
+    return toast("Ten rachunek jest już zamknięty.");
+  }
+  const total = orderTotal(order);
+  M(
+    "Finalizacja płatności",
+    `<div class="payTotal">${money(total)}</div><label>Metoda</label><select id="pm"><option value="card">Karta</option><option value="cash">Gotówka</option><option value="blik">BLIK</option><option value="transfer">Przelew</option></select>${F("pt", "Napiwek", "number", 'min="0" step="0.01" value="0"')}`,
+    async () => {
+      const tip = Number($("#pt").value) || 0;
+      const method = $("#pm").value;
+      const { error } = await sb.rpc("cafe_finalize_pos_order", {
+        p_order_id: id,
+        p_method: method,
+        p_tip_amount: tip,
+      });
+      if (error) return alert("Nie udało się zamknąć rachunku: " + error.message);
+      $("#dlg").close();
+      await load();
+      renderPOS();
+      toast("Rachunek opłacony");
+    },
+  );
+};
+
+// Avoid accidental self-linking by email when an employee already belongs to another account.
+const bootHardeningBase = boot;
+boot = async function (s) {
+  await bootHardeningBase(s);
+  if (!S.u) return;
+  const e = currentEmployee();
+  if (!e) return;
+  if (e.user_id && e.user_id !== S.u.id) return;
+  if (!e.user_id && e.email && e.email.toLowerCase() === (S.u.email || "").toLowerCase()) {
+    await sb.from("employees").update({ user_id: S.u.id }).eq("id", e.id).is("user_id", null);
+  }
+};
+
+window.CAFE_STRYCH_VERSION = APP_VERSION;
