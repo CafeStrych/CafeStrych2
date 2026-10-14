@@ -25,6 +25,7 @@ const sb = supabase.createClient(
     announcements: [],
     swaps: [],
     reservationPlaces: [],
+    rooms: [], tables: [], menuItems: [], orders: [], orderItems: [], payments: [], expenses: [], cashSessions: [],
     bookingMode:
       localStorage.getItem("cafeBookingMode") ||
       (matchMedia("(max-width:700px)").matches ? "week" : "month"),
@@ -92,12 +93,7 @@ async function load() {
   core.forEach((x) => x.error && console.warn(x.error.message));
   [S.profiles, S.employees, S.shifts, S.bookings, S.products, S.leave, S.bugs] =
     core.map((x) => x.data || []);
-  const lr = await sb
-    .from("activity_logs")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(300);
-  S.logs = lr.error ? [] : lr.data || [];
+  S.logs = [];
   const optional = await Promise.all([
     sb.from("availability").select("*").order("work_date"),
     sb
@@ -610,19 +606,7 @@ window.deleteEmployee = async (id) => {
   renderEmployees();
   toast("Pracownik usunięty");
 };
-async function addLog(action, module, details = {}) {
-  try {
-    await sb.from("activity_logs").insert({
-      user_id: S.u?.id || null,
-      user_email: S.u?.email || null,
-      action,
-      module,
-      details,
-    });
-  } catch (e) {
-    console.warn("Log unavailable", e);
-  }
-}
+async function addLog(action, module, details = {}) { return {action,module,details}; }
 window.renderLogs = () => {
   let modules = [...new Set(S.logs.map((x) => x.module).filter(Boolean))];
   M(
@@ -908,11 +892,7 @@ sb.channel("cafe-strych-live")
     { event: "*", schema: "public", table: "profiles" },
     liveReload,
   )
-  .on(
-    "postgres_changes",
-    { event: "*", schema: "public", table: "activity_logs" },
-    liveReload,
-  )
+
   .on(
     "postgres_changes",
     { event: "*", schema: "public", table: "availability" },
@@ -935,7 +915,7 @@ sb.auth.getSession().then(({ data }) => boot(data.session));
 
 
 /* Cafe Strych 2.4.0: accounts, profiles, contracts, online status, admin navigation */
-const APP_VERSION="3.0.1 HOTFIX";
+const APP_VERSION="3.0.2 STABLE";
 function splitName(v){const p=String(v||"").trim().split(/\s+/);return {first:p[0]||"Pracownik",last:p.slice(1).join(" ")}}
 function employeeLabel(id){const e=S.employees.find(x=>x.id===id);if(!e)return "Pracownik";const n=splitName(e.full_name);const same=S.employees.filter(x=>splitName(x.full_name).first.toLocaleLowerCase("pl")===n.first.toLocaleLowerCase("pl"));return same.length>1&&n.last?`${n.first} ${n.last[0].toUpperCase()}.`:n.first}
 async function markOnline(){if(!S.u)return;await sb.from("profiles").update({last_seen_at:new Date().toISOString(),email:S.u.email}).eq("id",S.u.id)}
@@ -956,33 +936,33 @@ setTimeout(()=>{const a=document.querySelector('#account');if(a)a.onclick=()=>{c
 
 /* ===== CAFE STRYCH PRO 3.0: dashboard, POS, QR, rooms, finance ===== */
 function money(v){return Number(v||0).toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2})+' zł'}
-function orderItems(id){return S.orderItems.filter(x=>x.order_id===id)}
+function orderItems(id){return (S.orderItems || []).filter(x=>x.order_id===id)}
 function orderTotal(o){return orderItems(o.id).reduce((n,x)=>n+Number(x.qty)*Number(x.unit_price),0)}
 function todayISO(){return ISO(new Date())}
 function renderDashboard(){
- const today=todayISO(), todayOrders=S.orders.filter(o=>(o.created_at||'').slice(0,10)===today), paid=todayOrders.filter(o=>o.status==='paid');
- const revenue=paid.reduce((n,o)=>n+orderTotal(o),0), active=S.orders.filter(o=>!['paid','cancelled'].includes(o.status));
+ const today=todayISO(), todayOrders=(S.orders || []).filter(o=>(o.created_at||'').slice(0,10)===today), paid=todayOrders.filter(o=>o.status==='paid');
+ const revenue=paid.reduce((n,o)=>n+orderTotal(o),0), active=(S.orders || []).filter(o=>!['paid','cancelled'].includes(o.status));
  const bookings=S.bookings.filter(b=>(b.start_at||'').slice(0,10)===today);
  $('#content').innerHTML=`<div class="toolbar"><div><h2>Centrum dowodzenia</h2><small>Dzisiaj • ${new Date().toLocaleDateString('pl-PL')}</small></div><button class="primary" onclick="newOrder()">+ Nowy rachunek</button></div>
  <div class="kpiGrid"><button class="kpi" onclick="renderPOS()"><span>Sprzedaż dzisiaj</span><strong>${money(revenue)}</strong><small>${paid.length} zamkniętych rachunków</small></button><button class="kpi" onclick="renderPOS()"><span>Aktywne zamówienia</span><strong>${active.length}</strong><small>kuchnia i bar</small></button><button class="kpi" onclick="view('bookings')"><span>Rezerwacje dzisiaj</span><strong>${bookings.length}</strong><small>${bookings.reduce((n,b)=>n+Number(b.guests_count||0),0)} gości</small></button><button class="kpi" onclick="renderEmployees()"><span>Pracownicy</span><strong>${S.employees.length}</strong><small>aktywnych kont</small></button></div>
  <div class="dashboardGrid"><section class="glass adminSection"><div class="sectionHead"><h3>Aktualne rachunki</h3><button class="ghost" onclick="renderPOS()">Otwórz POS</button></div>${active.slice(0,8).map(orderCard).join('')||'<p class="muted">Brak aktywnych rachunków.</p>'}</section><section class="glass adminSection"><h3>Dzisiejsze rezerwacje</h3>${bookings.map(bookingCard).join('')||'<p class="muted">Brak rezerwacji.</p>'}</section></div>`;
 }
-function orderCard(o){const t=S.tables.find(x=>x.id===o.table_id);return `<button class="orderCard status-${o.status}" onclick="openOrder('${o.id}')"><div><b>${E(o.order_no||'Rachunek')}</b><small>${E(t?.label||o.customer_name||'Sprzedaż bez stolika')} • ${E(o.status)}</small></div><strong>${money(orderTotal(o))}</strong></button>`}
+function orderCard(o){const t=(S.tables || []).find(x=>x.id===o.table_id);return `<button class="orderCard status-${o.status}" onclick="openOrder('${o.id}')"><div><b>${E(o.order_no||'Rachunek')}</b><small>${E(t?.label||o.customer_name||'Sprzedaż bez stolika')} • ${E(o.status)}</small></div><strong>${money(orderTotal(o))}</strong></button>`}
 function renderPOS(){
- const active=S.orders.filter(o=>!['paid','cancelled'].includes(o.status));
+ const active=(S.orders || []).filter(o=>!['paid','cancelled'].includes(o.status));
  $('#content').innerHTML=`<div class="toolbar"><div><h2>POS i zamówienia</h2><small>Rachunki, bar, kuchnia i płatności</small></div><div class="actions"><button class="ghost" onclick="renderMenuAdmin()">Menu</button><button class="ghost" onclick="renderRoomsAdmin()">Sale i stoliki</button><button class="primary" onclick="newOrder()">+ Rachunek</button></div></div><div class="posStatus"><button onclick="filterOrders('all')">Wszystkie</button><button onclick="filterOrders('new')">Nowe</button><button onclick="filterOrders('preparing')">W przygotowaniu</button><button onclick="filterOrders('ready')">Gotowe</button></div><div id="ordersGrid" class="ordersGrid">${active.map(orderCard).join('')||'<p class="muted">Brak otwartych rachunków.</p>'}</div>`;
 }
-window.filterOrders=st=>{const a=S.orders.filter(o=>!['paid','cancelled'].includes(o.status)&&(st==='all'||o.status===st));$('#ordersGrid').innerHTML=a.map(orderCard).join('')||'<p class="muted">Brak zamówień.</p>'}
-window.newOrder=()=>{M('Nowy rachunek',`<label>Stolik</label><select id="ot"><option value="">Bez stolika / na wynos</option>${S.tables.filter(t=>t.active!==false).map(t=>`<option value="${t.id}">${E(t.label)}</option>`).join('')}</select>${F('oc','Nazwa klienta / opis','','placeholder="opcjonalnie"')}`,async()=>{const no='CS-'+new Date().toISOString().replace(/\D/g,'').slice(2,14),{data,error}=await sb.from('pos_orders').insert({order_no:no,table_id:$('#ot').value||null,customer_name:$('#oc').value.trim()||null,status:'new',source:'pos',created_by:S.u.id}).select().single();if(error)return alert(error.message);$('#dlg').close();await load();openOrder(data.id)})}
-window.openOrder=id=>{const o=S.orders.find(x=>x.id===id);if(!o)return;const items=orderItems(id),cats=[...new Set(S.menuItems.filter(x=>x.active!==false).map(x=>x.category||'Inne'))];$('#content').innerHTML=`<div class="toolbar"><div><button class="ghost" onclick="renderPOS()">← POS</button><h2>${E(o.order_no)}</h2><small>${E(o.status)} • ${new Date(o.created_at).toLocaleString('pl-PL')}</small></div><strong class="grandTotal">${money(orderTotal(o))}</strong></div><div class="posLayout"><section><div class="categoryTabs">${cats.map(c=>`<button onclick="showMenuCategory('${E(c)}')">${E(c)}</button>`).join('')}</div><div id="menuTiles" class="menuTiles">${menuTiles(cats[0],id)}</div></section><aside class="ticket"><h3>Rachunek</h3>${items.map(i=>`<div class="ticketRow"><div><b>${E(i.item_name)}</b><small>${i.qty} × ${money(i.unit_price)}</small></div><div><b>${money(i.qty*i.unit_price)}</b><button class="danger mini" onclick="removeOrderItem('${i.id}','${id}')">×</button></div></div>`).join('')||'<p class="muted">Dodaj pozycje z menu.</p>'}<div class="ticketTotal"><span>Razem</span><strong>${money(orderTotal(o))}</strong></div><div class="orderActions"><button class="ghost" onclick="setOrderStatus('${id}','preparing')">Przygotowanie</button><button class="ghost" onclick="setOrderStatus('${id}','ready')">Gotowe</button><button class="primary" onclick="payOrder('${id}')">Płatność</button></div></aside></div>`;window.__openOrder=id}
-function menuTiles(cat,id){return S.menuItems.filter(x=>x.active!==false&&(!cat||(x.category||'Inne')===cat)).map(x=>`<button class="menuTile" onclick="addOrderItem('${id}','${x.id}')"><span>${E(x.name)}</span><strong>${money(x.price)}</strong><small>${E(x.category||'Inne')}</small></button>`).join('')||'<p class="muted">Brak produktów w kategorii.</p>'}
+window.filterOrders=st=>{const a=(S.orders || []).filter(o=>!['paid','cancelled'].includes(o.status)&&(st==='all'||o.status===st));$('#ordersGrid').innerHTML=a.map(orderCard).join('')||'<p class="muted">Brak zamówień.</p>'}
+window.newOrder=()=>{M('Nowy rachunek',`<label>Stolik</label><select id="ot"><option value="">Bez stolika / na wynos</option>${(S.tables || []).filter(t=>t.active!==false).map(t=>`<option value="${t.id}">${E(t.label)}</option>`).join('')}</select>${F('oc','Nazwa klienta / opis','','placeholder="opcjonalnie"')}`,async()=>{const no='CS-'+new Date().toISOString().replace(/\D/g,'').slice(2,14),{data,error}=await sb.from('pos_orders').insert({order_no:no,table_id:$('#ot').value||null,customer_name:$('#oc').value.trim()||null,status:'new',source:'pos',created_by:S.u.id}).select().single();if(error)return alert(error.message);$('#dlg').close();await load();openOrder(data.id)})}
+window.openOrder=id=>{const o=S.orders.find(x=>x.id===id);if(!o)return;const items=orderItems(id),cats=[...new Set((S.menuItems || []).filter(x=>x.active!==false).map(x=>x.category||'Inne'))];$('#content').innerHTML=`<div class="toolbar"><div><button class="ghost" onclick="renderPOS()">← POS</button><h2>${E(o.order_no)}</h2><small>${E(o.status)} • ${new Date(o.created_at).toLocaleString('pl-PL')}</small></div><strong class="grandTotal">${money(orderTotal(o))}</strong></div><div class="posLayout"><section><div class="categoryTabs">${cats.map(c=>`<button onclick="showMenuCategory('${E(c)}')">${E(c)}</button>`).join('')}</div><div id="menuTiles" class="menuTiles">${menuTiles(cats[0],id)}</div></section><aside class="ticket"><h3>Rachunek</h3>${items.map(i=>`<div class="ticketRow"><div><b>${E(i.item_name)}</b><small>${i.qty} × ${money(i.unit_price)}</small></div><div><b>${money(i.qty*i.unit_price)}</b><button class="danger mini" onclick="removeOrderItem('${i.id}','${id}')">×</button></div></div>`).join('')||'<p class="muted">Dodaj pozycje z menu.</p>'}<div class="ticketTotal"><span>Razem</span><strong>${money(orderTotal(o))}</strong></div><div class="orderActions"><button class="ghost" onclick="setOrderStatus('${id}','preparing')">Przygotowanie</button><button class="ghost" onclick="setOrderStatus('${id}','ready')">Gotowe</button><button class="primary" onclick="payOrder('${id}')">Płatność</button></div></aside></div>`;window.__openOrder=id}
+function menuTiles(cat,id){return (S.menuItems || []).filter(x=>x.active!==false&&(!cat||(x.category||'Inne')===cat)).map(x=>`<button class="menuTile" onclick="addOrderItem('${id}','${x.id}')"><span>${E(x.name)}</span><strong>${money(x.price)}</strong><small>${E(x.category||'Inne')}</small></button>`).join('')||'<p class="muted">Brak produktów w kategorii.</p>'}
 window.showMenuCategory=cat=>{$('#menuTiles').innerHTML=menuTiles(cat,window.__openOrder)}
-window.addOrderItem=async(oid,mid)=>{const m=S.menuItems.find(x=>x.id===mid),old=orderItems(oid).find(x=>x.menu_item_id===mid);const q=old?sb.from('pos_order_items').update({qty:Number(old.qty)+1}).eq('id',old.id):sb.from('pos_order_items').insert({order_id:oid,menu_item_id:mid,item_name:m.name,qty:1,unit_price:m.price,tax_rate:m.tax_rate||23});const{error}=await q;if(error)return alert(error.message);await load();openOrder(oid)}
+window.addOrderItem=async(oid,mid)=>{const m=(S.menuItems || []).find(x=>x.id===mid),old=orderItems(oid).find(x=>x.menu_item_id===mid);const q=old?sb.from('pos_order_items').update({qty:Number(old.qty)+1}).eq('id',old.id):sb.from('pos_order_items').insert({order_id:oid,menu_item_id:mid,item_name:m.name,qty:1,unit_price:m.price,tax_rate:m.tax_rate||23});const{error}=await q;if(error)return alert(error.message);await load();openOrder(oid)}
 window.removeOrderItem=async(id,oid)=>{await sb.from('pos_order_items').delete().eq('id',id);await load();openOrder(oid)}
 window.setOrderStatus=async(id,status)=>{const{error}=await sb.from('pos_orders').update({status,updated_at:new Date().toISOString()}).eq('id',id);if(error)return alert(error.message);await load();openOrder(id)}
 window.payOrder=id=>{const total=orderTotal(S.orders.find(x=>x.id===id));M('Finalizacja płatności',`<div class="payTotal">${money(total)}</div><label>Metoda</label><select id="pm"><option value="card">Karta</option><option value="cash">Gotówka</option><option value="blik">BLIK</option><option value="transfer">Przelew</option></select>${F('pt','Napiwek','number','min="0" step="0.01" value="0"')}`,async()=>{const{error}=await sb.from('pos_payments').insert({order_id:id,amount:total,tip_amount:+$('#pt').value||0,method:$('#pm').value,created_by:S.u.id});if(error)return alert(error.message);await sb.from('pos_orders').update({status:'paid',closed_at:new Date().toISOString()}).eq('id',id);$('#dlg').close();await load();renderPOS();toast('Rachunek opłacony')})}
-window.renderMenuAdmin=()=>{$('#content').innerHTML=`<div class="toolbar"><div><button class="ghost" onclick="renderPOS()">← POS</button><h2>Menu sprzedażowe</h2></div><button class="primary" onclick="menuForm()">+ Produkt</button></div><div class="menuAdminGrid">${S.menuItems.map(x=>`<div class="card"><div class="grow"><b>${E(x.name)}</b><small>${E(x.category||'Inne')} • ${money(x.price)} • VAT ${x.tax_rate||23}%</small></div><button class="ghost" onclick="menuForm('${x.id}')">Edytuj</button></div>`).join('')}</div>`}
-window.menuForm=(id=null)=>{const r=S.menuItems.find(x=>x.id===id);M(r?'Edytuj produkt':'Nowy produkt',`${F('mn','Nazwa','','required')}${F('mc','Kategoria','','required')}${F('mp','Cena','number','min="0" step="0.01" required')}${F('mv','VAT %','number','min="0" value="23"')}<label class="checkRow"><input id="ma" type="checkbox" checked> Aktywny w sprzedaży i QR</label>`,async()=>{const p={name:$('#mn').value.trim(),category:$('#mc').value.trim(),price:+$('#mp').value,tax_rate:+$('#mv').value,active:$('#ma').checked,updated_at:new Date().toISOString()},q=r?sb.from('menu_items').update(p).eq('id',id):sb.from('menu_items').insert({...p,created_by:S.u.id}),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderMenuAdmin()});setTimeout(()=>{if(r){$('#mn').value=r.name;$('#mc').value=r.category;$('#mp').value=r.price;$('#mv').value=r.tax_rate||23;$('#ma').checked=r.active!==false}},0)}
-window.renderRoomsAdmin=()=>{$('#content').innerHTML=`<div class="toolbar"><div><button class="ghost" onclick="renderPOS()">← POS</button><h2>Sale i stoliki</h2></div><div class="actions"><button class="ghost" onclick="roomForm()">+ Sala</button><button class="primary" onclick="tableForm()">+ Stolik</button></div></div>${S.rooms.map(r=>`<section class="roomBlock"><div class="sectionHead"><div><h3>${E(r.name)}</h3><small>do ${r.capacity||'—'} osób</small></div><button class="ghost" onclick="roomForm('${r.id}')">Edytuj</button></div><div class="tableGrid">${S.tables.filter(t=>t.room_id===r.id).map(t=>`<button class="tableAdmin" onclick="tableForm('${t.id}')"><b>${E(t.label)}</b><small>${t.seats||0} miejsc</small><span>${t.qr_token?'QR aktywny':'Brak QR'}</span></button>`).join('')||'<p class="muted">Brak stolików.</p>'}</div></section>`).join('')}`}
-window.roomForm=(id=null)=>{const r=S.rooms.find(x=>x.id===id);M(r?'Edytuj salę':'Nowa sala',`${F('rn','Nazwa','','required')}${F('rc','Pojemność','number','min="1"')}`,async()=>{const p={name:$('#rn').value.trim(),capacity:+$('#rc').value||null},q=r?sb.from('cafe_rooms').update(p).eq('id',id):sb.from('cafe_rooms').insert(p),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderRoomsAdmin()});setTimeout(()=>{if(r){$('#rn').value=r.name;$('#rc').value=r.capacity||''}},0)}
-window.tableForm=(id=null)=>{const r=S.tables.find(x=>x.id===id);M(r?'Edytuj stolik':'Nowy stolik',`<label>Sala</label><select id="tr">${S.rooms.map(x=>`<option value="${x.id}">${E(x.name)}</option>`).join('')}</select>${F('tl','Nazwa / numer','','required')}${F('ts','Liczba miejsc','number','min="1" value="4"')}<label class="checkRow"><input id="ta" type="checkbox" checked> Aktywny</label>`,async()=>{const p={room_id:$('#tr').value,label:$('#tl').value.trim(),seats:+$('#ts').value||4,active:$('#ta').checked,qr_token:r?.qr_token||crypto.randomUUID()},q=r?sb.from('cafe_tables').update(p).eq('id',id):sb.from('cafe_tables').insert(p),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderRoomsAdmin()});setTimeout(()=>{if(r){$('#tr').value=r.room_id;$('#tl').value=r.label;$('#ts').value=r.seats;$('#ta').checked=r.active!==false}},0)}
+window.renderMenuAdmin=()=>{$('#content').innerHTML=`<div class="toolbar"><div><button class="ghost" onclick="renderPOS()">← POS</button><h2>Menu sprzedażowe</h2></div><button class="primary" onclick="menuForm()">+ Produkt</button></div><div class="menuAdminGrid">${(S.menuItems || []).map(x=>`<div class="card"><div class="grow"><b>${E(x.name)}</b><small>${E(x.category||'Inne')} • ${money(x.price)} • VAT ${x.tax_rate||23}%</small></div><button class="ghost" onclick="menuForm('${x.id}')">Edytuj</button></div>`).join('')}</div>`}
+window.menuForm=(id=null)=>{const r=(S.menuItems || []).find(x=>x.id===id);M(r?'Edytuj produkt':'Nowy produkt',`${F('mn','Nazwa','','required')}${F('mc','Kategoria','','required')}${F('mp','Cena','number','min="0" step="0.01" required')}${F('mv','VAT %','number','min="0" value="23"')}<label class="checkRow"><input id="ma" type="checkbox" checked> Aktywny w sprzedaży i QR</label>`,async()=>{const p={name:$('#mn').value.trim(),category:$('#mc').value.trim(),price:+$('#mp').value,tax_rate:+$('#mv').value,active:$('#ma').checked,updated_at:new Date().toISOString()},q=r?sb.from('menu_items').update(p).eq('id',id):sb.from('menu_items').insert({...p,created_by:S.u.id}),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderMenuAdmin()});setTimeout(()=>{if(r){$('#mn').value=r.name;$('#mc').value=r.category;$('#mp').value=r.price;$('#mv').value=r.tax_rate||23;$('#ma').checked=r.active!==false}},0)}
+window.renderRoomsAdmin=()=>{$('#content').innerHTML=`<div class="toolbar"><div><button class="ghost" onclick="renderPOS()">← POS</button><h2>Sale i stoliki</h2></div><div class="actions"><button class="ghost" onclick="roomForm()">+ Sala</button><button class="primary" onclick="tableForm()">+ Stolik</button></div></div>${(S.rooms || []).map(r=>`<section class="roomBlock"><div class="sectionHead"><div><h3>${E(r.name)}</h3><small>do ${r.capacity||'—'} osób</small></div><button class="ghost" onclick="roomForm('${r.id}')">Edytuj</button></div><div class="tableGrid">${(S.tables || []).filter(t=>t.room_id===r.id).map(t=>`<button class="tableAdmin" onclick="tableForm('${t.id}')"><b>${E(t.label)}</b><small>${t.seats||0} miejsc</small><span>${t.qr_token?'QR aktywny':'Brak QR'}</span></button>`).join('')||'<p class="muted">Brak stolików.</p>'}</div></section>`).join('')}`}
+window.roomForm=(id=null)=>{const r=(S.rooms || []).find(x=>x.id===id);M(r?'Edytuj salę':'Nowa sala',`${F('rn','Nazwa','','required')}${F('rc','Pojemność','number','min="1"')}`,async()=>{const p={name:$('#rn').value.trim(),capacity:+$('#rc').value||null},q=r?sb.from('cafe_rooms').update(p).eq('id',id):sb.from('cafe_rooms').insert(p),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderRoomsAdmin()});setTimeout(()=>{if(r){$('#rn').value=r.name;$('#rc').value=r.capacity||''}},0)}
+window.tableForm=(id=null)=>{const r=(S.tables || []).find(x=>x.id===id);M(r?'Edytuj stolik':'Nowy stolik',`<label>Sala</label><select id="tr">${(S.rooms || []).map(x=>`<option value="${x.id}">${E(x.name)}</option>`).join('')}</select>${F('tl','Nazwa / numer','','required')}${F('ts','Liczba miejsc','number','min="1" value="4"')}<label class="checkRow"><input id="ta" type="checkbox" checked> Aktywny</label>`,async()=>{const p={room_id:$('#tr').value,label:$('#tl').value.trim(),seats:+$('#ts').value||4,active:$('#ta').checked,qr_token:r?.qr_token||crypto.randomUUID()},q=r?sb.from('cafe_tables').update(p).eq('id',id):sb.from('cafe_tables').insert(p),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderRoomsAdmin()});setTimeout(()=>{if(r){$('#tr').value=r.room_id;$('#tl').value=r.label;$('#ts').value=r.seats;$('#ta').checked=r.active!==false}},0)}
