@@ -25,3 +25,31 @@ dialog{width:min(760px,calc(100% - 24px));max-height:88vh;padding:0;border:1px s
 .loadingBar{position:fixed;z-index:110;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,transparent,var(--accent),transparent);animation:load 1s linear infinite;transform-origin:left}.offlineBadge{position:fixed;z-index:105;left:50%;top:12px;transform:translateX(-50%);background:var(--danger);padding:7px 12px;border-radius:999px;font-size:11px;font-weight:800;box-shadow:var(--shadow)}@keyframes load{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
 @media(max-width:1100px){:root{--sidebar:76px}.shell{margin-left:var(--sidebar);padding:16px 18px 100px}nav{width:var(--sidebar);padding:14px 10px}nav:before{content:"CS";padding:12px 8px 20px;text-align:center}nav button{justify-content:center;padding:12px}nav button small{display:none}.kpiGrid{grid-template-columns:repeat(2,1fr)}.dashboardGrid,.posLayout{grid-template-columns:1fr}.ticket{position:static}.inventoryGrid,.settingsGrid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:720px){.shell{margin-left:0;padding:10px 10px 88px}.shell>header{height:58px}.hero{align-items:flex-start;gap:12px;flex-direction:column}.kpiGrid,.employeeDash,.inventoryGrid,.settingsGrid{grid-template-columns:1fr}.dashboardGrid{grid-template-columns:1fr}.menuTiles{grid-template-columns:repeat(2,1fr)}.weekGrid{grid-template-columns:1fr}.weekDay{min-height:90px}.monthGrid{grid-template-columns:repeat(7,minmax(44px,1fr));overflow:auto}.day{min-height:80px;padding:6px}.entry{display:none}.adminShell{grid-template-columns:1fr}.adminNav{display:grid;grid-template-columns:repeat(3,1fr)}.adminAccount{grid-template-columns:1fr}.toolbar{align-items:flex-start;flex-direction:column}.toolbar .actions{width:100%}.toolbar .actions>*{flex:1}.shell nav{top:auto;bottom:0;left:0;right:0;width:100%;height:66px;display:flex;flex-direction:row;padding:6px 8px;justify-content:space-around;border-right:0;border-top:1px solid var(--line)}nav:before{display:none}nav button{flex:1;justify-content:center;flex-direction:column;gap:1px;padding:6px;font-size:18px}nav button small{display:block;font-size:9px}.brand b{font-size:15px}.authbox{padding:22px}}
+
+/* ===== 4.0.1 UI FIX PACK ===== */
+:root{--bottom-nav:78px;--content-max:1480px}
+.shell{margin-left:0;max-width:var(--content-max);margin-right:auto;margin-left:auto;padding:18px 22px calc(var(--bottom-nav) + 34px)}
+.shell>header{height:64px;margin-bottom:14px}
+nav{position:fixed;z-index:60;left:50%;top:auto;bottom:14px;transform:translateX(-50%);width:min(760px,calc(100% - 28px));height:68px;padding:7px 9px;background:rgba(25,20,18,.94);border:1px solid rgba(255,255,255,.12);border-radius:22px;box-shadow:0 20px 70px rgba(0,0,0,.45);backdrop-filter:blur(22px);display:grid;grid-template-columns:repeat(5,1fr);gap:4px}
+nav:before{display:none}
+nav button{min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:7px 4px;border-radius:16px;background:transparent;color:var(--muted);text-align:center}
+nav button span{font-size:19px;line-height:1}
+nav button small{font-size:10px;color:inherit;font-weight:700;white-space:nowrap}
+nav button.active{background:rgba(227,163,92,.14);color:var(--text);box-shadow:none}
+nav button.active small{color:var(--accent2)}
+nav button:hover{background:rgba(255,255,255,.07);color:var(--text)}
+main#content{min-height:560px;padding:22px;border-radius:20px}
+.hero{border-radius:20px}
+.settingsGrid,.adminGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.settingsCard,.adminSection{min-width:0}
+.adminShell{display:grid;grid-template-columns:190px 1fr;gap:16px;align-items:start}
+.adminNav{position:sticky;top:16px;display:grid;gap:5px;padding:8px;background:var(--surface2);border:1px solid var(--line);border-radius:16px}
+.adminNav button{padding:11px 12px;text-align:left;background:transparent;border-radius:10px;color:var(--muted)}
+.adminNav button.active{background:rgba(227,163,92,.12);color:var(--text);font-weight:800}
+.adminPane{min-width:0}
+.menuTiles{grid-template-columns:repeat(3,minmax(0,1fr))}
+.bookingCard .bookingIcon,.scheduleIcon{font-size:20px}
+.badge-booking{background:rgba(118,183,255,.13);color:#a9d2ff}
+.badge-shift{background:rgba(111,207,151,.13);color:#a9e6bf}
+@media(max-width:900px){.settingsGrid,.adminGrid{grid-template-columns:1fr}.adminShell{grid-template-columns:1fr}.adminNav{position:static;display:flex;overflow:auto}.adminNav button{white-space:nowrap}.dashboardGrid{grid-template-columns:1fr}.kpiGrid{grid-template-columns:repeat(2,1fr)}.posLayout{grid-template-columns:1fr}.menuTiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.shell{padding:12px 12px calc(var(--bottom-nav) + 24px)}.shell>header{height:56px}.brand small{display:none!important}.hero{padding:16px}.hero h1{font-size:18px}main#content{padding:15px}.toolbar{align-items:flex-start;flex-direction:column}.toolbar .actions{width:100%}.toolbar .actions button{flex:1}.kpiGrid{grid-template-columns:1fr 1fr;gap:8px}.kpi{padding:13px;min-height:105px}.kpi strong{font-size:21px}.menuTiles{grid-template-columns:1fr 1fr}.ticket{position:static}.actions{width:100%}.actions button{min-height:42px}}
