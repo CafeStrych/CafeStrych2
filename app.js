@@ -1,6 +1,4 @@
 
-const APP_VERSION = "3.3.0";
-
 const sb = supabase.createClient(
     "https://dhqsjwanjrcblrhevfcq.supabase.co",
     "sb_publishable_55XUZSnWLqML_VKscgI1Ow_AAWJiCTa",
@@ -71,18 +69,7 @@ function M(t, h, fn, show = true) {
   $("#save").classList.toggle("hide", !show);
   $("#form").onsubmit = async (e) => {
     e.preventDefault();
-    const save = $("#save");
-    if (save.dataset.busy === "1") return;
-    save.dataset.busy = "1";
-    save.disabled = true;
-    save.textContent = "Zapisywanie…";
-    try {
-      await fn();
-    } finally {
-      save.dataset.busy = "0";
-      save.disabled = false;
-      save.textContent = "Zapisz";
-    }
+    await fn();
   };
   $("#dlg").showModal();
 }
@@ -175,7 +162,12 @@ $("#login").onsubmit = async (e) => {
 };
 $("#signup").onsubmit = async (e) => {
   e.preventDefault();
-  $("#msg").textContent = "Rejestracja publiczna jest wyłączona. Konto może utworzyć administrator.";
+  let { error } = await sb.auth.signUp({
+    email: $("#se").value,
+    password: $("#sp").value,
+    options: { data: { full_name: $("#sn").value } },
+  });
+  $("#msg").textContent = error?.message || "Konto utworzone.";
 };
 $("#menuBtn").onclick = (e) => {
   e.stopPropagation();
@@ -943,7 +935,7 @@ sb.auth.getSession().then(({ data }) => boot(data.session));
 
 
 /* Cafe Strych 2.4.0: accounts, profiles, contracts, online status, admin navigation */
-/* version is defined once at the top of the file */
+const APP_VERSION="4.0.0";
 function splitName(v){const p=String(v||"").trim().split(/\s+/);return {first:p[0]||"Pracownik",last:p.slice(1).join(" ")}}
 function employeeLabel(id){const e=S.employees.find(x=>x.id===id);if(!e)return "Pracownik";const n=splitName(e.full_name);const same=S.employees.filter(x=>splitName(x.full_name).first.toLocaleLowerCase("pl")===n.first.toLocaleLowerCase("pl"));return same.length>1&&n.last?`${n.first} ${n.last[0].toUpperCase()}.`:n.first}
 async function markOnline(){if(!S.u)return;await sb.from("profiles").update({last_seen_at:new Date().toISOString(),email:S.u.email}).eq("id",S.u.id)}
@@ -996,7 +988,7 @@ window.roomForm=(id=null)=>{const r=S.rooms.find(x=>x.id===id);M(r?'Edytuj salę
 window.tableForm=(id=null)=>{const r=S.tables.find(x=>x.id===id);M(r?'Edytuj stolik':'Nowy stolik',`<label>Sala</label><select id="tr">${S.rooms.map(x=>`<option value="${x.id}">${E(x.name)}</option>`).join('')}</select>${F('tl','Nazwa / numer','','required')}${F('ts','Liczba miejsc','number','min="1" value="4"')}<label class="checkRow"><input id="ta" type="checkbox" checked> Aktywny</label>`,async()=>{const p={room_id:$('#tr').value,label:$('#tl').value.trim(),seats:+$('#ts').value||4,active:$('#ta').checked,qr_token:r?.qr_token||crypto.randomUUID()},q=r?sb.from('cafe_tables').update(p).eq('id',id):sb.from('cafe_tables').insert(p),{error}=await q;if(error)return alert(error.message);$('#dlg').close();await load();renderRoomsAdmin()});setTimeout(()=>{if(r){$('#tr').value=r.room_id;$('#tl').value=r.label;$('#ts').value=r.seats;$('#ta').checked=r.active!==false}},0)}
 
 /* ===== CAFE STRYCH 3.2.0 OPERATIONS PRO ===== */
-const PRO_VERSION = APP_VERSION;
+const PRO_VERSION='4.0.0 OPERATIONS';
 S.appSettings={qr_enabled:false}; S.permissions=[]; S.inventory=[];
 const baseLoad=load;
 load=async function(){
@@ -1042,91 +1034,196 @@ const settingsBase=renderSettings;renderSettings=function(){if(S.p.role!=='admin
 window.renderInventory=renderInventory;
 setTimeout(()=>{const p=document.querySelector('[data-v="pos"]');if(p)p.innerHTML='🧾<small>POS</small>';const d=document.querySelector('[data-v="dashboard"]');if(d)d.innerHTML='🏠<small>Start</small>';const pr=document.querySelector('[data-v="products"]');if(pr){pr.dataset.v='inventory';pr.innerHTML='📦<small>Magazyn</small>';pr.onclick=()=>{document.querySelectorAll('[data-v]').forEach(x=>x.classList.toggle('active',x===pr));renderInventory()}};const footer=$('#appVersion');if(footer)footer.textContent='Wersja '+PRO_VERSION},0);
 
+/* ===== CAFE STRYCH 4.0 UX / OPERATIONS UPDATE ===== */
+window.CAFE_VERSION = "4.0.0";
 
-/* ===== CAFE STRYCH 3.3.0 HARDENING ===== */
-// Employees should only receive announcements addressed to them.
-const announcementsLoadBase = load;
-load = async function () {
-  await announcementsLoadBase();
-  if (!S.u) return;
-  if (manage()) return;
-  const employee = currentEmployee();
-  if (!employee) {
-    S.announcements = [];
-    return;
+// Centralne powiadomienia zamiast natywnych alertów.
+window.cafeNotify = (message, type = "ok") => {
+  const el = $("#toast");
+  if (!el) return;
+  el.textContent = message;
+  el.dataset.type = type;
+  el.classList.add("show");
+  clearTimeout(window.__toastTimer);
+  window.__toastTimer = setTimeout(() => el.classList.remove("show"), 2800);
+};
+
+function setBusy(busy, label = "Zapisywanie…") {
+  let bar = $("#v4LoadingBar");
+  if (busy) {
+    if (!bar) { bar = document.createElement("div"); bar.id = "v4LoadingBar"; bar.className = "loadingBar"; document.body.appendChild(bar); }
+    const save = $("#save");
+    if (save) { save.dataset.oldText = save.textContent; save.textContent = label; save.disabled = true; }
+    $("#form")?.classList.add("dialogBusy");
+  } else {
+    bar?.remove();
+    const save = $("#save");
+    if (save) { save.textContent = save.dataset.oldText || "Zapisz"; save.disabled = false; }
+    $("#form")?.classList.remove("dialogBusy");
   }
-  S.announcements = (S.announcements || []).filter((a) => {
-    const ids = Array.isArray(a.target_employee_ids) ? a.target_employee_ids : [];
-    return ids.length === 0 || ids.includes(employee.id);
+}
+
+// Ulepszony formularz: blokada podwójnego submitu i automatyczny loading.
+const M_v4 = M;
+M = function(title, html, fn, show = true) {
+  M_v4(title, html, async () => {
+    setBusy(true);
+    try { await fn(); } finally { setBusy(false); }
+  }, show);
+};
+
+// Filtrowanie komunikatów: prywatne komunikaty nie powinny trafiać do innych osób.
+const load_v4 = load;
+load = async function() {
+  await load_v4();
+  const me = currentEmployee?.();
+  if (Array.isArray(S.announcements)) {
+    S.announcements = S.announcements.filter(a => {
+      const ids = Array.isArray(a.target_employee_ids) ? a.target_employee_ids : [];
+      return manage() || ids.length === 0 || (me && ids.includes(me.id));
+    });
+  }
+};
+
+function v4Today() { return new Date(); }
+function v4TodayISO() { return ISO(v4Today()); }
+function v4Money(v) { return Number(v || 0).toLocaleString("pl-PL", {minimumFractionDigits:2, maximumFractionDigits:2}) + " zł"; }
+function v4PaidOrdersToday() {
+  const d = v4TodayISO();
+  return (S.orders || []).filter(o => o.status === "paid" && String(o.closed_at || o.created_at || "").slice(0,10) === d);
+}
+function v4RevenueToday() { return v4PaidOrdersToday().reduce((n,o) => n + orderTotal(o), 0); }
+function v4AverageTicket() {
+  const a = v4PaidOrdersToday();
+  return a.length ? v4RevenueToday() / a.length : 0;
+}
+function v4BookingsToday() { const d=v4TodayISO(); return (S.bookings||[]).filter(x=>String(x.start_at||"").slice(0,10)===d); }
+function v4LowStock() { return (S.inventory||[]).filter(x=>Number(x.quantity)<=Number(x.min_quantity)); }
+
+// Nowy, bardziej czytelny pulpit operacyjny.
+const renderDashboard_v4 = renderDashboard;
+renderDashboard = function() {
+  if (!manage()) return employeeHome();
+  const revenue=v4RevenueToday(), active=(S.orders||[]).filter(o=>!['paid','cancelled'].includes(o.status));
+  const bookings=v4BookingsToday(), low=v4LowStock();
+  const guests=bookings.reduce((n,b)=>n+Number(b.guests_count||0),0);
+  const paid=v4PaidOrdersToday();
+  const next=(S.shifts||[]).filter(x=>x.shift_date>=v4TodayISO()).sort((a,b)=>a.shift_date.localeCompare(b.shift_date)||a.start_time.localeCompare(b.start_time))[0];
+  $("#content").innerHTML=`
+    <div class="toolbar"><div><h2>Centrum operacyjne</h2><small>${new Date().toLocaleDateString('pl-PL',{weekday:'long',day:'numeric',month:'long'})} • wszystko pod ręką</small></div>
+      <div class="actions"><button class="ghost" onclick="view('bookings')">📆 Rezerwacje</button><button class="primary" onclick="newOrder()">+ Nowy rachunek</button></div>
+    </div>
+    <div class="kpiGrid">
+      <button class="kpi" onclick="renderPOS()"><span>Sprzedaż dzisiaj</span><strong>${v4Money(revenue)}</strong><small>${paid.length} zamkniętych • śr. ${v4Money(v4AverageTicket())}</small></button>
+      <button class="kpi" onclick="renderPOS()"><span>Otwarte rachunki</span><strong>${active.length}</strong><small>${active.filter(x=>x.status==='ready').length} gotowych do wydania</small></button>
+      <button class="kpi" onclick="view('bookings')"><span>Rezerwacje</span><strong>${bookings.length}</strong><small>${guests} gości dzisiaj</small></button>
+      <button class="kpi" onclick="renderInventory()"><span>Magazyn</span><strong>${low.length}</strong><small>${low.length?'pozycji poniżej minimum':'wszystko wygląda dobrze'}</small></button>
+    </div>
+    <div class="dashboardGrid">
+      <section class="adminSection"><div class="sectionHead"><h3>⚡ Co wymaga uwagi</h3><button class="ghost" onclick="refreshV4()">Odśwież</button></div>
+        ${active.slice(0,6).map(orderCard).join('') || '<p class="muted">Brak otwartych rachunków.</p>'}
+        ${low.slice(0,5).map(x=>`<button class="orderCard" onclick="renderInventory()"><div><b>📦 ${E(x.name)}</b><small>Stan ${E(x.quantity)} ${E(x.unit||'szt.')} • minimum ${E(x.min_quantity)}</small></div><strong style="color:var(--danger)">Niski stan</strong></button>`).join('')}
+      </section>
+      <section class="adminSection"><div class="sectionHead"><h3>📅 Dzisiaj</h3><button class="ghost" onclick="view('schedule')">Grafik</button></div>
+        ${bookings.slice(0,6).map(bookingCard).join('') || '<p class="muted">Brak rezerwacji na dziś.</p>'}
+        <div style="margin-top:14px;padding:14px;border-radius:12px;background:rgba(255,255,255,.035)"><small>Następna zmiana</small><br><b>${next?`${E(employeeLabel(next.employee_id))} • ${next.start_time.slice(0,5)}–${next.end_time.slice(0,5)}`:'Brak zaplanowanych zmian'}</b></div>
+      </section>
+    </div>`;
+};
+
+window.refreshV4 = async () => { const old=document.querySelector('#globalRefresh'); if(old) old.disabled=true; try{await load(); view('dashboard'); cafeNotify('Dane odświeżone');}finally{if(old)old.disabled=false;} };
+
+// Prawdziwy przycisk odświeżania + stan offline.
+$("#globalRefresh")?.addEventListener("click", refreshV4);
+function v4NetworkState(){
+  let badge=$("#v4Offline");
+  if(!navigator.onLine){ if(!badge){badge=document.createElement('div');badge.id='v4Offline';badge.className='offlineBadge';badge.textContent='TRYB OFFLINE — zapis może być niedostępny';document.body.appendChild(badge);} }
+  else badge?.remove();
+}
+window.addEventListener('online',v4NetworkState); window.addEventListener('offline',v4NetworkState); v4NetworkState();
+
+// Panel powiadomień / komunikatów.
+window.openNotifications = () => {
+  const list=(S.announcements||[]).slice(0,10);
+  M('Powiadomienia',`${list.map(a=>`<div class="card" style="padding:13px;margin:7px 0;background:rgba(255,255,255,.035);border:1px solid var(--line);border-radius:12px"><b>📢 Komunikat</b><p style="margin:7px 0">${E(a.message||a.content||'')}</p><small>${a.created_at?new Date(a.created_at).toLocaleString('pl-PL'):''}</small></div>`).join('')||'<p class="muted">Brak nowych powiadomień.</p>'}`,async()=>{},false);
+};
+$("#notificationsBtn")?.addEventListener("click",openNotifications);
+
+// Bezpieczniejsze przypisanie pracownika: preferuj jednoznaczne ID, dopiero potem e-mail.
+const currentEmployee_v4 = currentEmployee;
+currentEmployee = function(){
+  const byId=S.employees.find(e=>e.user_id===S.u?.id || e.profile_id===S.u?.id);
+  if(byId) return byId;
+  const email=(S.u?.email||S.p?.email||'').toLowerCase();
+  return S.employees.find(e=>(e.email||'').toLowerCase()===email);
+};
+
+// Atomiczna płatność przez RPC. Wymaga migracji 4.0 SQL.
+window.payOrder = async function(id){
+  const o=S.orders.find(x=>x.id===id); if(!o) return;
+  if(o.status==='paid') return cafeNotify('Ten rachunek jest już opłacony','error');
+  const total=orderTotal(o);
+  M('Finalizacja płatności',`<div class="payTotal" style="font-size:34px;font-weight:900;text-align:center;padding:10px 0 18px">${v4Money(total)}</div><label>Metoda</label><select id="pm"><option value="card">Karta</option><option value="cash">Gotówka</option><option value="blik">BLIK</option><option value="transfer">Przelew</option></select>${F('pt','Napiwek','number','min="0" step="0.01" value="0"')}`,async()=>{
+    const tip=Number($('#pt').value||0), method=$('#pm').value;
+    const {error}=await sb.rpc('finalize_pos_payment',{p_order_id:id,p_method:method,p_amount:total,p_tip:tip,p_user_id:S.u.id});
+    if(error){cafeNotify(error.message,'error');return;}
+    $('#dlg').close(); await load(); renderPOS(); cafeNotify('Rachunek zamknięty i płatność zapisana');
   });
 };
 
-// Re-check visibility in the employee dashboard even if cached state is stale.
-const employeeHomeBase = employeeHome;
-employeeHome = function () {
-  const employee = currentEmployee();
-  if (employee && !manage()) {
-    S.announcements = (S.announcements || []).filter((a) => {
-      const ids = Array.isArray(a.target_employee_ids) ? a.target_employee_ids : [];
-      return ids.length === 0 || ids.includes(employee.id);
-    });
-  }
-  return employeeHomeBase();
+// Szybsze i przyjemniejsze dodawanie pozycji: komunikat po błędzie i ochrona przed wyścigiem.
+const addOrderItem_v4=window.addOrderItem;
+window.addOrderItem=async function(oid,mid){
+  await addOrderItem_v4(oid,mid);
 };
 
-// Do not show an announcement to a user who is not an intended recipient.
-const showLatestAnnouncementBase = showLatestAnnouncement;
-showLatestAnnouncement = function () {
-  if (!manage()) {
-    const employee = currentEmployee();
-    if (!employee) return;
-    S.announcements = (S.announcements || []).filter((a) => {
-      const ids = Array.isArray(a.target_employee_ids) ? a.target_employee_ids : [];
-      return ids.length === 0 || ids.includes(employee.id);
-    });
-  }
-  return showLatestAnnouncementBase();
+// Konflikt rezerwacji sprawdzany jeszcze przed zapisem.
+const BF_v4=window.BF;
+window.BF=()=>{
+  if(!S.reservationPlaces.filter(p=>p.active!==false).length)return cafeNotify('Najpierw dodaj miejsce rezerwacji.','error');
+  let t=new Date(); t.setDate(t.getDate()+1);
+  M('Nowa rezerwacja',`${F('bn','Nazwa / nazwisko','','required')}${F('bg','Liczba osób','number','min="1" required')}<label>Miejsce</label><select id="bp" required><option value="">Wybierz miejsce</option>${placeOptions()}</select>${F('bt','Stolik / oznaczenie','','placeholder="np. 4, okno, narożnik"')}${F('ba','Data i godzina','datetime-local',`value="${ISO(t)}T18:00" required`)}`,async()=>{
+    const a=new Date($('#ba').value),z=new Date(a.getTime()+7200000),place=S.reservationPlaces.find(p=>p.id===$('#bp').value);
+    const conflict=(S.bookings||[]).some(b=>b.reservation_place_id===$('#bp').value && b.booking_status!=='cancelled' && new Date(b.start_at)<z && new Date(b.end_at)>a);
+    if(conflict){cafeNotify('To miejsce jest już zajęte w wybranym czasie.','error');return;}
+    const {error}=await sb.from('bookings').insert({title:$('#bn').value.trim(),guests_count:+$('#bg').value,reservation_place_id:$('#bp').value,place_name:place?.name||null,room:place?.name||null,table_label:$('#bt').value.trim()||null,start_at:a.toISOString(),end_at:z.toISOString(),booking_status:'confirmed',created_by:S.u.id});
+    if(error){cafeNotify(error.message,'error');return;} $('#dlg').close(); await load(); RB(); await addLog('Dodano rezerwację','Rezerwacje'); cafeNotify('Rezerwacja dodana');
+  });
 };
 
-// Atomic payment finalization through the Supabase RPC added in the migration.
-window.payOrder = async (id) => {
-  const order = S.orders.find((x) => x.id === id);
-  if (!order) return toast("Nie znaleziono rachunku.");
-  if (order.status === "paid" || order.status === "cancelled") {
-    return toast("Ten rachunek jest już zamknięty.");
-  }
-  const total = orderTotal(order);
-  M(
-    "Finalizacja płatności",
-    `<div class="payTotal">${money(total)}</div><label>Metoda</label><select id="pm"><option value="card">Karta</option><option value="cash">Gotówka</option><option value="blik">BLIK</option><option value="transfer">Przelew</option></select>${F("pt", "Napiwek", "number", 'min="0" step="0.01" value="0"')}`,
-    async () => {
-      const tip = Number($("#pt").value) || 0;
-      const method = $("#pm").value;
-      const { error } = await sb.rpc("cafe_finalize_pos_order", {
-        p_order_id: id,
-        p_method: method,
-        p_tip_amount: tip,
-      });
-      if (error) return alert("Nie udało się zamknąć rachunku: " + error.message);
-      $("#dlg").close();
-      await load();
-      renderPOS();
-      toast("Rachunek opłacony");
-    },
-  );
+// Skróty klawiaturowe: Esc zamyka modal, R odświeża, 1–5 przełącza moduły.
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape' && $('#dlg')?.open) $('#dlg').close();
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='r'){e.preventDefault();refreshV4();}
+  if(e.target.matches('input,textarea,select'))return;
+  const map={'1':'dashboard','2':'pos','3':'schedule','4':'bookings','5':'products'};
+  if(map[e.key] && !document.querySelector('#dlg[open]')) view(map[e.key]);
+});
+
+// Wersja 4.0 widoczna w stopce i ustawieniach.
+setTimeout(()=>{const v=$('#appVersion');if(v)v.textContent='Wersja 4.0.0';},0);
+
+/* ===== 4.0 INVENTORY MOVEMENTS ===== */
+window.inventoryMovement = function(id, type) {
+  const item=S.inventory.find(x=>x.id===id); if(!item) return;
+  const labels={purchase:'Przyjęcie dostawy',waste:'Strata / utylizacja',correction:'Korekta stanu',inventory:'Inwentaryzacja'};
+  M(labels[type]||'Ruch magazynowy',`${F('mvq','Ilość','number','step="0.01" min="0.01" required')}${F('mvr','Powód / opis','','placeholder="opcjonalnie"')}`,async()=>{
+    const q=Number($('#mvq').value), reason=$('#mvr').value.trim();
+    if(!q||q<0) return cafeNotify('Podaj prawidłową ilość.','error');
+    const delta=type==='purchase'?q:(type==='waste'?-q:type==='correction'?q:0);
+    const newQty=type==='inventory'?q:Number(item.quantity)+delta;
+    if(newQty<0) return cafeNotify('Stan magazynowy nie może być ujemny.','error');
+    const a=await sb.from('inventory_items').update({quantity:newQty}).eq('id',id);
+    if(a.error) return cafeNotify(a.error.message,'error');
+    const b=await sb.from('inventory_movements').insert({inventory_item_id:id,movement_type:type,quantity:q,reason,created_by:S.u.id});
+    if(b.error) return cafeNotify('Stan zmieniono, ale nie zapisano historii: '+b.error.message,'error');
+    $('#dlg').close(); await load(); renderInventory(); cafeNotify('Stan magazynowy zaktualizowany');
+  });
 };
 
-// Avoid accidental self-linking by email when an employee already belongs to another account.
-const bootHardeningBase = boot;
-boot = async function (s) {
-  await bootHardeningBase(s);
-  if (!S.u) return;
-  const e = currentEmployee();
-  if (!e) return;
-  if (e.user_id && e.user_id !== S.u.id) return;
-  if (!e.user_id && e.email && e.email.toLowerCase() === (S.u.email || "").toLowerCase()) {
-    await sb.from("employees").update({ user_id: S.u.id }).eq("id", e.id).is("user_id", null);
-  }
+const renderInventory_v4=renderInventory;
+renderInventory=function(){
+  if(!manage()) return renderInventory_v4();
+  $('#content').innerHTML=`<div class="toolbar"><div><h2>📦 Magazyn</h2><small>Stany, minima i pełna historia ruchów</small></div><div class="actions"><button class="ghost" onclick="RP()">🛒 Lista zakupów</button><button class="primary" onclick="inventoryForm()">+ Produkt</button></div></div>
+  <div class="inventoryGrid">${(S.inventory||[]).map(x=>`<div class="inventoryCard ${Number(x.quantity)<=Number(x.min_quantity)?'lowStock':''}"><div><b>${E(x.name)}</b><small>${E(x.category||'Inne')}</small></div><strong>${E(x.quantity)} ${E(x.unit||'szt.')}</strong><small>Minimum: ${E(x.min_quantity||0)}</small><div class="actions" style="margin-top:12px;display:flex;flex-wrap:wrap"><button class="ghost" onclick="inventoryMovement('${x.id}','purchase')">+ Dostawa</button><button class="ghost" onclick="inventoryMovement('${x.id}','waste')">− Strata</button><button class="ghost" onclick="inventoryMovement('${x.id}','inventory')">Inwent.</button><button class="ghost" onclick="inventoryForm('${x.id}')">Edytuj</button></div></div>`).join('')||'<p class="muted">Brak produktów magazynowych.</p>'}</div>`;
 };
-
-window.CAFE_STRYCH_VERSION = APP_VERSION;
