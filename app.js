@@ -110,10 +110,18 @@ async function load() {
       .select("*")
       .order("created_at", { ascending: false }),
     sb.from("reservation_places").select("*").order("sort_order").order("name"),
+    sb.from("cafe_rooms").select("*").order("sort_order"),
+    sb.from("cafe_tables").select("*").order("label"),
+    sb.from("menu_items").select("*").order("category").order("name"),
+    sb.from("pos_orders").select("*").order("created_at", { ascending: false }).limit(300),
+    sb.from("pos_order_items").select("*").limit(1000),
+    sb.from("pos_payments").select("*").order("created_at", { ascending: false }).limit(500),
+    sb.from("business_expenses").select("*").order("expense_date", { ascending: false }).limit(300),
+    sb.from("cash_sessions").select("*").order("opened_at", { ascending: false }).limit(50),
   ]);
-  [S.availability, S.announcements, S.swaps, S.reservationPlaces, S.rooms, S.tables, S.menuItems, S.orders, S.orderItems, S.payments, S.expenses, S.cashSessions] = optional.map((x) =>
-    x.error ? [] : x.data || [],
-  );
+  const optionalData = optional.map((x) => x.error ? [] : (x.data || []));
+  [S.availability, S.announcements, S.swaps, S.reservationPlaces, S.rooms, S.tables, S.menuItems, S.orders, S.orderItems, S.payments, S.expenses, S.cashSessions] = optionalData;
+  S.rooms ||= []; S.tables ||= []; S.menuItems ||= []; S.orders ||= []; S.orderItems ||= []; S.payments ||= []; S.expenses ||= []; S.cashSessions ||= [];
 }
 async function boot(s) {
   S.u = s?.user || null;
@@ -927,7 +935,7 @@ sb.auth.getSession().then(({ data }) => boot(data.session));
 
 
 /* Cafe Strych 2.4.0: accounts, profiles, contracts, online status, admin navigation */
-const APP_VERSION="3.0.0 PRO";
+const APP_VERSION="3.0.1 HOTFIX";
 function splitName(v){const p=String(v||"").trim().split(/\s+/);return {first:p[0]||"Pracownik",last:p.slice(1).join(" ")}}
 function employeeLabel(id){const e=S.employees.find(x=>x.id===id);if(!e)return "Pracownik";const n=splitName(e.full_name);const same=S.employees.filter(x=>splitName(x.full_name).first.toLocaleLowerCase("pl")===n.first.toLocaleLowerCase("pl"));return same.length>1&&n.last?`${n.first} ${n.last[0].toUpperCase()}.`:n.first}
 async function markOnline(){if(!S.u)return;await sb.from("profiles").update({last_seen_at:new Date().toISOString(),email:S.u.email}).eq("id",S.u.id)}
